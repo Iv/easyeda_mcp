@@ -445,6 +445,33 @@ export function registerEasyEdaTools(server: McpServer, bridge: EasyEdaBridge): 
       }
     }
   );
+
+  server.registerTool(
+    "easyeda_run_script",
+    {
+      title: "Run EasyEDA Pro API script",
+      description: "Runs an async JavaScript function body inside the EasyEDA Pro extension with `eda` (the EasyEDA Pro extension API) and `args` in scope; the returned value is JSON-serialized. Can modify the open document (place components, wires, net labels, etc.).",
+      inputSchema: {
+        code: z.string().min(1).describe("Async function body, e.g. `return await eda.dmt_Project.getCurrentProjectInfo();`"),
+        args: z.record(z.string(), z.unknown()).optional(),
+        timeoutMs: DefaultTimeoutSchema.default(60_000)
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async ({ code, args, timeoutMs }) => {
+      try {
+        const result = await bridge.call("runScript", { code, args }, timeoutMs);
+        return ok("Executed EasyEDA Pro script.", { result });
+      } catch (error) {
+        return fail(error);
+      }
+    }
+  );
 }
 
 function doctorNextSteps(status: EditorStatus): string[] {

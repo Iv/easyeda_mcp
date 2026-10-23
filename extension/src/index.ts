@@ -98,7 +98,8 @@ const handlers: Record<string, (params: Record<string, any>) => Promise<unknown>
   exportNetlist,
   exportGerber,
   exportPdf,
-  confirmedAction
+  confirmedAction,
+  runScript
 };
 
 export function activate(status?: "onStartupFinished", arg?: string): void {
@@ -322,10 +323,13 @@ function handleConnectionFailure(
   connectionState.compatibility = evaluateProtocolCompatibility(PROTOCOL_VERSION);
   connectionState.phase = isPermissionLikeError(error) ? "blocked" : "idle";
 
-  const hasRetryLeft = options.shouldRetry && connectionState.attemptIndex < bridgeConfig.reconnectDelayMs.length - 1;
-  if (hasRetryLeft) {
-    const nextAttempt = connectionState.attemptIndex + 1;
-    const delayMs = bridgeConfig.reconnectDelayMs[nextAttempt];
+  const lastDelayIndex = bridgeConfig.reconnectDelayMs.length - 1;
+  const hasRetryLeft = options.shouldRetry && connectionState.attemptIndex < lastDelayIndex;
+  // The MCP server is usually started lazily by the client, so keep polling quietly after the initial retries.
+  const keepPolling = options.shouldRetry && connectionState.phase !== "blocked";
+  if (hasRetryLeft || keepPolling) {
+    const nextAttempt = Math.min(connectionState.attemptIndex + 1, lastDelayIndex);
+    const delayMs = hasRetryLeft ? bridgeConfig.reconnectDelayMs[nextAttempt] : Math.max(bridgeConfig.reconnectDelayMs[lastDelayIndex] ?? 0, 5_000);
     connectionState.attemptIndex = nextAttempt;
     connectionState.reconnectTimer = setTimeout(() => {
       connectionState.reconnectTimer = undefined;
@@ -336,7 +340,7 @@ function handleConnectionFailure(
     }, delayMs);
   }
 
-  if (options.manual || !hasRetryLeft || connectionState.phase === "blocked") {
+  if (options.manual || connectionState.phase === "blocked") {
     showMessage("EasyEDA MCP Bridge", [
       error.message,
       "",
@@ -686,6 +690,30 @@ async function exportPdf(params: Record<string, any>): Promise<Record<string, un
   ensureApi("pcb_ManufactureData", "getPdfFile");
   const file = await eda.pcb_ManufactureData.getPdfFile(fileName);
   return saveApiFile(file, `${fileName}.pdf`, true);
+}
+
+// Runs caller-supplied JavaScript with access to the EasyEDA Pro API. Used to author schematics/PCBs,
+// which the read-only tools cannot do. The bridge only listens on 127.0.0.1.
+async function runScript(params: Record<string, any>): Promise<unknown> {
+  const code = String(params.code ?? "");
+  if (!code.trim()) {
+    throw new Error("runScript requires non-empty params.code.");
+  }
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => (...args: unknown[]) => Promise<unknown>;
+  const fn = new AsyncFunction("eda", "args", code);
+  const result = await fn(eda, params.args ?? {});
+  return toPlain(result);
+}
+
+function toPlain(value: unknown): unknown {
+  if (value === undefined) {
+    return null;
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return String(value);
+  }
 }
 
 async function confirmedAction(params: Record<string, any>): Promise<Record<string, unknown>> {
